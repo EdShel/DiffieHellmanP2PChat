@@ -1,0 +1,19 @@
+﻿<Window x:Class="DiffieHellmanP2PChat.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:DiffieHellmanP2PChat"
+        mc:Ignorable="d"
+        Title="MainWindow" Height="450" Width="800">
+    <StackPanel>
+        <TextBox Name="yourAddressLabel" FontFamily="Arial" FontSize="30">
+            Your address is {0}:{1}
+        </TextBox>
+        <TextBox Name="peerAddressText" />
+        <Button Name="connectButton" Click="connectButton_Click">
+            Connect to peer
+        </Button>
+        <TextBlock Name="lastChatMessageLabel" Height="362" />
+    </StackPanel>
+</Window>
