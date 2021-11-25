@@ -17,7 +17,7 @@ namespace DiffieHellmanP2PChat
 
     public class Chat
     {
-        private List<Peer> peerConnections = new List<Peer>();
+        private readonly List<Peer> peerConnections = new();
         private readonly CancellationToken ct;
         private readonly string localIpAddress;
         private int? myIndex;
@@ -34,7 +34,7 @@ namespace DiffieHellmanP2PChat
         public string MyIpAddress => localIpAddress;
         public int? MyIndex { get => myIndex; set => myIndex = value; }
         public bool CanSendMessage => sharedSecretDh != null;
-        public DiffieHellmanAlgorithm? SecretDh { get => this.secretDh; set => this.secretDh = value; }
+        public DiffieHellmanAlgorithm? MySecretDh { get => this.secretDh; set => this.secretDh = value; }
         public DiffieHellmanAlgorithm? SharedSecretDh { get => this.sharedSecretDh; set => this.sharedSecretDh = value; }
 
         public async Task StartAcceptingPeerConnections()
@@ -60,8 +60,8 @@ namespace DiffieHellmanP2PChat
 
         private Peer StartListeningToPeerConnection(TcpClient newConnection)
         {
-            Peer newPeer = new Peer(newConnection, ct, this);
-            var t = Task.Run(newPeer.ServeAsync, ct);
+            Peer newPeer = new(newConnection, ct, this);
+            var _ = Task.Run(newPeer.ServeAsync, ct);
             return newPeer;
         }
 
@@ -95,7 +95,7 @@ namespace DiffieHellmanP2PChat
             lock (this.peerConnections)
             {
                 this.peerConnections.Add(peer);
-                this.SecretDh = null;
+                this.MySecretDh = null;
                 this.SharedSecretDh = null;
             }
         }
@@ -115,6 +115,7 @@ namespace DiffieHellmanP2PChat
             {
                 this.peerConnections.Remove(peer);
             }
+
             var quitUserName = NicknameStore.GetNickname(PortParser.Parse(peer.IpAddress));
             OnNewChatMessageReceived($"{quitUserName} left the conversation");
         }
@@ -125,6 +126,7 @@ namespace DiffieHellmanP2PChat
             {
                 return;
             }
+
             var plaintextBytes = Encoding.UTF8.GetBytes(messageText);
             var ciphertextBytes = this.SharedSecretDh.Encrypt(plaintextBytes);
             var ciphertextBase64 = Convert.ToBase64String(ciphertextBytes);

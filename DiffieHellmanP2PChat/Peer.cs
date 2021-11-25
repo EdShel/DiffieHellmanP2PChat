@@ -86,8 +86,6 @@ namespace DiffieHellmanP2PChat
 
         private async Task HandlePeersListRequest()
         {
-            // Possibly can refuse or delay connection when there 
-            // is at least one peer with 'null' index
             this.chat.MyIndex ??= 0;
             var myself = new PeerInfo
             {
@@ -104,7 +102,6 @@ namespace DiffieHellmanP2PChat
                     })
                     .Append(myself)
                     .OrderBy(p => p.Index),
-                YourIndex = this.chat.PeerConnections.Count() + 1,
                 MyIndex = this.chat.MyIndex.Value
             });
         }
@@ -128,15 +125,16 @@ namespace DiffieHellmanP2PChat
                 await peerConnection.SendAsync(helloAddMeToYourPeersList);
             }
 
-            this.chat.OnNewChatMessageReceived("You connected to "
-                + string.Join(", ", response.Peers.Select(p => NicknameStore.GetNickname(PortParser.Parse(p.IpAddress)))));
+            var peersNames = response.Peers.Select(
+                p => NicknameStore.GetNickname(PortParser.Parse(p.IpAddress)));
+            this.chat.OnNewChatMessageReceived("You connected to " + string.Join(", ", peersNames));
         }
 
         private async Task HandleConnectionRequest(JObject jObject)
         {
-            var addingRequest = jObject.ToObject<HelloAddMeToYourPeersList>();
-            this.index = addingRequest.MyIndex;
-            this.ipAddress = addingRequest.MyIpAddress;
+            var requestToConnect = jObject.ToObject<HelloAddMeToYourPeersList>();
+            this.index = requestToConnect.MyIndex;
+            this.ipAddress = requestToConnect.MyIpAddress;
             this.chat.AddPeerToCollection(this);
             var youAreIn = new OkeyYouAreIn
             {
@@ -145,7 +143,7 @@ namespace DiffieHellmanP2PChat
             await SendAsync(youAreIn);
 
             this.chat.OnNewChatMessageReceived(
-                $"{NicknameStore.GetNickname(this.Port)} has joined the chat");
+                $"{NicknameStore.GetNickname(this.Port)} has joined the conversation");
         }
 
         private async Task HandlePeerAcceptedMe(JObject jObject)
@@ -153,8 +151,8 @@ namespace DiffieHellmanP2PChat
             try
             {
                 Monitor.Enter(this.chat);
-                OkeyYouAreIn okeyYoureIn = jObject.ToObject<OkeyYouAreIn>()!;
-                this.index = okeyYoureIn.MyIndex;
+                OkeyYouAreIn connectionResponse = jObject.ToObject<OkeyYouAreIn>()!;
+                this.index = connectionResponse.MyIndex;
                 this.chat.AddPeerToCollection(this);
 
                 await GenerateDhNumbersAndPassThemToTheNext();
@@ -167,25 +165,28 @@ namespace DiffieHellmanP2PChat
 
         private async Task HandleCalculatingDiffieHellmanKey(JObject jObject)
         {
-            var dh = jObject.ToObject<CalculateDiffieHellmanKeyAndPassItToTheNext>();
-            if (this.chat.SecretDh == null)
+            var dh = jObject.ToObject<CalculateDiffieHellmanKeyAndPassItToTheNext>()!;
+            if (this.chat.MySecretDh == null)
             {
-                this.chat.SecretDh = DiffieHellmanAlgorithm.CreateFromKnownNumbers(dh.P, dh.G);
+                this.chat.MySecretDh = DiffieHellmanAlgorithm.CreateFromKnownNumbers(dh.P, dh.G);
             }
-            var poweredByMe = this.chat.SecretDh.CreateFromPublicKey(dh.Base);
+
+            var poweredByMe = this.chat.MySecretDh.CreateFromPublicKey(dh.Base);
 
             if (dh.SharedFor == this.chat.MyIndex)
             {
                 this.chat.SharedSecretDh = poweredByMe;
 
                 int peersCount = this.chat.PeerConnections.Count() + 1;
-                if (dh.PeersFinishedCount < peersCount)
+                bool notAllPeersHaveSharedKeyYet = dh.PeersFinishedCount < peersCount;
+                if (notAllPeersHaveSharedKeyYet)
                 {
                     var command = new CalculateDiffieHellmanKeyAndPassItToTheNext
                     {
                         G = dh.G,
                         P = dh.P,
-                        Base = this.chat.SecretDh!.Key,
+                        Base = this.chat.MySecretDh!.Key,
+
                         PeersFinishedCount = dh.PeersFinishedCount + 1,
                         SharedFor = GetPreviousPeerIndex(),
                     };
@@ -229,14 +230,14 @@ namespace DiffieHellmanP2PChat
             bool hasEveryoneAccepted = this.chat.PeerConnections.Count() == this.chat.MyIndex;
             if (hasEveryoneAccepted)
             {
-                this.chat.SecretDh = DiffieHellmanAlgorithm.Create();
+                this.chat.MySecretDh = DiffieHellmanAlgorithm.Create();
                 var nextPeer = this.chat.PeerConnections.First(
                     p => p.index == GetNextPeerIndex());
                 var command = new CalculateDiffieHellmanKeyAndPassItToTheNext
                 {
-                    G = this.chat.SecretDh!.G,
-                    P = this.chat.SecretDh!.P,
-                    Base = this.chat.SecretDh!.Key,
+                    G = this.chat.MySecretDh!.G,
+                    P = this.chat.MySecretDh!.P,
+                    Base = this.chat.MySecretDh!.Key,
                     SharedFor = GetPreviousPeerIndex()
                 };
                 await nextPeer.SendAsync(command);

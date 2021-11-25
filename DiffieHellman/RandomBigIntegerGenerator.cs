@@ -62,7 +62,6 @@ namespace DiffieHellman
 
                     factors.Add(i);
                     n /= i;
-                    // This should speed things up a bit for very large numbers!
                     if (n.IsProbablePrime(20))
                         return factors;
                 }

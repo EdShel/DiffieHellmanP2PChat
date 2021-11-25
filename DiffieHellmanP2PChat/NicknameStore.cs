@@ -8,7 +8,7 @@
             "Coward",
             "Strong",
             "High",
-            "Low",
+            "Golden",
             "Heavy",
             "Mighty",
             "Handsome",

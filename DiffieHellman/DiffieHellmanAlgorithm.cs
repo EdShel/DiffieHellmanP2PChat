@@ -31,7 +31,6 @@ namespace DiffieHellman
             BigInteger p = rng.NextPrimeNumber(KEY_LENGTH_BITS);
             BigInteger g = rng.GetPrimitiveRoot(p);
             BigInteger a = rng.NextBigInteger(KEY_LENGTH_BITS);
-            Console.WriteLine(g);
             return new DiffieHellmanAlgorithm(p, g, a);
         }
 

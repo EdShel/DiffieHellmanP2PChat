@@ -19,7 +19,6 @@ namespace DiffieHellmanP2PChat
         public const string COMMAND_NAME = "here are the peers";
         public override string Type { get; } = COMMAND_NAME;
         public IEnumerable<PeerInfo> Peers { get; set; }
-        public int YourIndex { get; set; }
         public int MyIndex { get; set; }
     }
     public class PeerInfo
