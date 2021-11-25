@@ -28,7 +28,7 @@ namespace DiffieHellmanP2PChat
 
 
         string ipAddress = "127.0.0.1";
-        int port = 8090 + new Random().Next() % 100;
+        int port = 8090 + new Random().Next() % 6000;
 
         public MainWindow()
         {
@@ -46,18 +46,27 @@ namespace DiffieHellmanP2PChat
         {
             this.Dispatcher.Invoke(() =>
             {
-                this.lastChatMessageLabel.Text += e.Message + Environment.NewLine;
+                this.lastChatMessageLabel.Text += Environment.NewLine + e.Message;
+                this.scrollContainer.ScrollToBottom();
             });
         }
 
-        private void connectButton_Click(object sender, RoutedEventArgs e)
+        private void sendButton_Click(object sender, RoutedEventArgs e)
         {
             if (this.chat == null)
             {
                 return;
             }
-            string address = this.peerAddressText.Text;
-            this.chat.ConnectToPeerByAddressAsync(address);
+            string messageText = this.peerAddressText.Text;
+            this.peerAddressText.Text = string.Empty;
+            if (!chat.CanSendMessage)
+            {
+                this.chat.ConnectToPeerByAddressAsync(messageText);
+            }
+            else
+            {
+                chat.SendMessage(messageText);
+            }
         }
     }
 }

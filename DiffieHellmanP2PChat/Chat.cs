@@ -8,6 +8,10 @@ using System.Threading;
 using System.IO;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System.Numerics;
+using DiffieHellman;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace DiffieHellmanP2PChat
 {
@@ -30,6 +34,8 @@ namespace DiffieHellmanP2PChat
         private readonly CancellationToken ct;
         private readonly string localIpAddress;
         private int? myIndex;
+        private DiffieHellmanAlgorithm? secretDh;
+        private DiffieHellmanAlgorithm? sharedSecretDh;
 
         public Chat(string localIpAddress, CancellationToken ct)
         {
@@ -40,18 +46,24 @@ namespace DiffieHellmanP2PChat
         public IEnumerable<Peer> PeerConnections => peerConnections;
         public string MyIpAddress => localIpAddress;
         public int? MyIndex { get => myIndex; set => myIndex = value; }
+        public bool CanSendMessage => sharedSecretDh != null;
+        public DiffieHellmanAlgorithm? SecretDh { get => this.secretDh; set => this.secretDh = value; }
+        public DiffieHellmanAlgorithm? SharedSecretDh { get => this.sharedSecretDh; set => this.sharedSecretDh = value; }
 
         public async Task StartAcceptingPeerConnections()
         {
-            var connectionListener = new TcpListener(IPEndPoint.Parse(this.localIpAddress));
+            var endpoint = IPEndPoint.Parse(this.localIpAddress);
+            var connectionListener = new TcpListener(endpoint);
             connectionListener.Start();
+
+            OnNewChatMessageReceived($"You are {NicknameStore.GetNickname(endpoint.Port)}");
+            OnNewChatMessageReceived($"Please enter address of a peer...");
 
             while (!ct.IsCancellationRequested)
             {
                 var newConnection = await connectionListener.AcceptTcpClientAsync(ct);
                 if (newConnection != null)
                 {
-                    OnNewChatMessageReceived($"Someone connected from {newConnection.Client.RemoteEndPoint}");
                     StartListeningToPeerConnection(newConnection);
                 }
             }
@@ -62,7 +74,6 @@ namespace DiffieHellmanP2PChat
         private Peer StartListeningToPeerConnection(TcpClient newConnection)
         {
             Peer newPeer = new Peer(newConnection, ct, this);
-            //this.peerConnections.Add(newPeer);
             var t = Task.Run(newPeer.ServeAsync, ct);
             return newPeer;
         }
@@ -82,7 +93,6 @@ namespace DiffieHellmanP2PChat
             return peer;
         }
 
-        // TODO: clear connection list
         public event EventHandler<NewPeerConnectedEventArgs> OnNewPeerConnected;
         public event EventHandler<NewChatMessageEventArgs> OnNewChatMessage;
 
@@ -96,11 +106,35 @@ namespace DiffieHellmanP2PChat
 
         public void AddPeerToCollection(Peer peer)
         {
-            this.peerConnections.Add(peer);
-            OnNewChatMessageReceived("New peer member: " + peer.IpAddress);
-            OnNewChatMessageReceived("Peers are: " + String.Join(
-                Environment.NewLine,
-                this.peerConnections.Select(p => $"#{p.Index} {p.IpAddress}")));
+            lock (this.peerConnections)
+            {
+                this.peerConnections.Add(peer);
+                this.SecretDh = null;
+                this.SharedSecretDh = null;
+            }
+        }
+
+        public async Task SendMessage(string messageText)
+        {
+            if (this.SharedSecretDh == null || !this.myIndex.HasValue)
+            {
+                return;
+            }
+            var plaintextBytes = Encoding.UTF8.GetBytes(messageText);
+            var ciphertextBytes = this.SharedSecretDh.Encrypt(plaintextBytes);
+            var ciphertextBase64 = Convert.ToBase64String(ciphertextBytes);
+            var chatMessage = new ChatMessageCommand
+            {
+                Base64Message = ciphertextBase64
+            };
+
+            foreach (var peer in this.peerConnections)
+            {
+                await peer.SendAsync(chatMessage);
+            }
+
+            var message = $"You: {messageText}";
+            this.OnNewChatMessageReceived(message);
         }
     }
 
@@ -121,6 +155,7 @@ namespace DiffieHellmanP2PChat
 
         public string IpAddress { get => ipAddress; set => ipAddress = value; }
         public int Index { get => index; set => index = value; }
+        public int Port => PortParser.Parse(IpAddress);
 
         public async Task ServeAsync()
         {
@@ -153,7 +188,6 @@ namespace DiffieHellmanP2PChat
             switch (jObject["Type"]?.Value<string>())
             {
                 case ListPeers.COMMAND_NAME:
-                    this.chat.OnNewChatMessageReceived("Sending list of peers");
                     // Possibly can refuse or delay connection when there 
                     // is at least one peer with 'null' index
                     this.chat.MyIndex ??= 0;
@@ -177,7 +211,6 @@ namespace DiffieHellmanP2PChat
                     });
                     break;
                 case HereAreThePeers.COMMAND_NAME:
-                    this.chat.OnNewChatMessageReceived("Got list of peers");
                     HereAreThePeers response = jObject.ToObject<HereAreThePeers>()!;
                     int myIndex = response.Peers.Count();
                     this.chat.MyIndex = myIndex;
@@ -194,10 +227,12 @@ namespace DiffieHellmanP2PChat
                         peerConnection.index = peer.Index;
                         await peerConnection.SendAsync(helloAddMeToYourPeersList);
                     }
+
+                    this.chat.OnNewChatMessageReceived("You connected to "
+                        + string.Join(", ", response.Peers.Select(p => NicknameStore.GetNickname(PortParser.Parse(p.IpAddress)))));
                     break;
                 case HelloAddMeToYourPeersList.COMMAND_NAME:
                     var addingRequest = jObject.ToObject<HelloAddMeToYourPeersList>();
-                    this.chat.OnNewChatMessageReceived("Adding stranger to the list");
                     this.index = addingRequest.MyIndex;
                     this.ipAddress = addingRequest.MyIpAddress;
                     this.chat.AddPeerToCollection(this);
@@ -206,14 +241,112 @@ namespace DiffieHellmanP2PChat
                         MyIndex = this.chat.MyIndex.Value,
                     };
                     await SendAsync(youAreIn);
+
+                    this.chat.OnNewChatMessageReceived(
+                        $"{NicknameStore.GetNickname(this.Port)} has joined the chat");
                     break;
                 case OkeyYouAreIn.COMMAND_NAME:
-                    OkeyYouAreIn okeyYoureIn = jObject.ToObject<OkeyYouAreIn>()!;
-                    this.index = okeyYoureIn.MyIndex;
-                    this.chat.OnNewChatMessageReceived("Got approval from " + okeyYoureIn.MyIndex);
-                    this.chat.AddPeerToCollection(this);
+                    try
+                    {
+                        Monitor.Enter(this.chat);
+                        OkeyYouAreIn okeyYoureIn = jObject.ToObject<OkeyYouAreIn>()!;
+                        this.index = okeyYoureIn.MyIndex;
+                        this.chat.AddPeerToCollection(this);
+
+                        await GenerateDhNumbersAndPassThemToTheNext();
+                    }
+                    finally
+                    {
+                        Monitor.Exit(this.chat);
+                    }
+                    break;
+                case CalculateDiffieHellmanKeyAndPassItToTheNext.COMMAND_NAME:
+                    var dh = jObject.ToObject<CalculateDiffieHellmanKeyAndPassItToTheNext>();
+                    if (this.chat.SecretDh == null)
+                    {
+                        this.chat.SecretDh = DiffieHellmanAlgorithm.CreateFromKnownNumbers(dh.P, dh.G);
+                    }
+                    var poweredByMe = this.chat.SecretDh.CreateFromPublicKey(dh.Base);
+
+                    if (dh.SharedFor == this.chat.MyIndex)
+                    {
+                        this.chat.SharedSecretDh = poweredByMe;
+
+                        int peersCount = this.chat.PeerConnections.Count() + 1;
+                        if (dh.PeersFinishedCount < peersCount)
+                        {
+                            var command = new CalculateDiffieHellmanKeyAndPassItToTheNext
+                            {
+                                G = dh.G,
+                                P = dh.P,
+                                Base = this.chat.SecretDh!.Key,
+                                PeersFinishedCount = dh.PeersFinishedCount + 1,
+                                SharedFor = GetPreviousPeerIndex(),
+                            };
+
+                            var nextPeer = this.chat.PeerConnections.First(
+                                p => p.index == GetNextPeerIndex());
+                            await nextPeer.SendAsync(command);
+                        }
+                        return;
+                    }
+
+                    var justPowered = new CalculateDiffieHellmanKeyAndPassItToTheNext
+                    {
+                        G = dh.G,
+                        P = dh.P,
+                        Base = poweredByMe.Key,
+                        PeersFinishedCount = dh.PeersFinishedCount,
+                        SharedFor = dh.SharedFor,
+                    };
+                    var nextPeerToPass = this.chat.PeerConnections.First(
+                        p => p.index == GetNextPeerIndex());
+                    await nextPeerToPass.SendAsync(justPowered);
+
+                    break;
+                case ChatMessageCommand.COMMAND_NAME:
+                    if (this.chat.SharedSecretDh == null)
+                    {
+                        return;
+                    }
+                    var chatMessage = jObject.ToObject<ChatMessageCommand>()!;
+                    var ciphertextBytes = Convert.FromBase64String(chatMessage.Base64Message);
+                    var plaintextBytes = this.chat.SharedSecretDh.Decrypt(ciphertextBytes);
+                    var plaintext = Encoding.UTF8.GetString(plaintextBytes);
+                    var message = NicknameStore.GetNickname(this.Port) + ": " + plaintext;
+                    this.chat.OnNewChatMessageReceived(message);
                     break;
             }
+        }
+
+        private async Task GenerateDhNumbersAndPassThemToTheNext()
+        {
+            bool hasEveryoneAccepted = this.chat.PeerConnections.Count() == this.chat.MyIndex;
+            if (hasEveryoneAccepted)
+            {
+                this.chat.SecretDh = DiffieHellmanAlgorithm.Create();
+                var nextPeer = this.chat.PeerConnections.First(
+                    p => p.index == GetNextPeerIndex());
+                var command = new CalculateDiffieHellmanKeyAndPassItToTheNext
+                {
+                    G = this.chat.SecretDh!.G,
+                    P = this.chat.SecretDh!.P,
+                    Base = this.chat.SecretDh!.Key,
+                    SharedFor = GetPreviousPeerIndex()
+                };
+                await nextPeer.SendAsync(command);
+            }
+        }
+
+        private int GetNextPeerIndex()
+        {
+            int peersCount = this.chat.PeerConnections.Count() + 1;
+            return (this.chat.MyIndex.Value + 1) % peersCount;
+        }
+        private int GetPreviousPeerIndex()
+        {
+            int peersCount = this.chat.PeerConnections.Count() + 1;
+            return ((this.chat.MyIndex.Value - 1) + peersCount) % peersCount;
         }
 
         public async Task SendAsync<T>(T data) where T : PeerCommand
@@ -264,5 +397,31 @@ namespace DiffieHellmanP2PChat
         public const string COMMAND_NAME = "ok you're in";
         public override string Type { get; } = COMMAND_NAME;
         public int MyIndex { get; set; }
+    }
+
+    public class CalculateDiffieHellmanKeyAndPassItToTheNext : PeerCommand
+    {
+        public const string COMMAND_NAME = "calculate dh";
+        public override string Type { get; } = COMMAND_NAME;
+        public BigInteger G { get; set; }
+        public BigInteger P { get; set; }
+        public BigInteger Base { get; set; }
+        public int SharedFor { get; set; }
+        public int PeersFinishedCount { get; set; }
+    }
+
+    public class ChatMessageCommand : PeerCommand
+    {
+        public const string COMMAND_NAME = "chat message";
+        public override string Type { get; } = COMMAND_NAME;
+        public string Base64Message { get; set; } = null!;
+    }
+
+    public static class PortParser
+    {
+        public static int Parse(string ip)
+        {
+            return int.Parse(new Regex(@":(\d+)$").Match(ip).Groups[1].Value);
+        }
     }
 }
